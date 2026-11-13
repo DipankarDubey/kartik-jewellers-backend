@@ -1,17 +1,16 @@
 # Cloud setup — Karthik Jewellers
 
-## Current setup status (2026-11-14)
+## Current setup status (verified 2026-11-14)
 
 - **Cloudinary:** Connected Free-plan environment. Created the `karthik-jewellers` Media Library folder. The authenticated `POST /api/admin/upload` endpoint uploads images to that folder.
-- **MongoDB Atlas:** Organization-level **AI client/MCP access is disabled**. The connected integration cannot inspect the existing `NodePractice` cluster or create a database until the Atlas Organization Owner enables AI client access. **The database has NOT been created or verified yet.**
+- **MongoDB Atlas:** AI client access is enabled. Connected to the existing `NodePractice` FREE cluster (Project 0, AWS Mumbai / `AP_SOUTH_1`). Created and verified database `kartik_jewellers` with collections `admins`, `products`, `customers`. No production admin account or jewellery data was inserted; the Node.js seed process creates the initial admin and six demo products when first launched with valid private credentials.
 
 ## MongoDB — existing NodePractice cluster
 
-1. Sign in at https://cloud.mongodb.com/ and locate the project containing the existing **NodePractice** cluster. Do **not** create another cluster.
-2. Ask an Atlas **Organization Owner** to enable AI client access (MCP) for the organization if you want the connected assistant to create/verify the database. Otherwise, you can create the database directly in Atlas under NodePractice: **Browse Collections** > **Add My Own Data** > database `kartik_jewellers` > first collection `products`. Other collections (`admins`, `customers`) will be created automatically when the backend writes to them.
-3. Under **Database Access**, create a dedicated application user with `readWrite` permissions on `kartik_jewellers`. Generate a random password and store it in your private .env, not GitHub.
-4. Under **Network Access**, allow your backend's outgoing IP (and your own current IP for local testing) rather than opening access to the internet when possible.
-5. **Connect** > **Drivers** > **Node.js** on NodePractice, copy the SRV URI and set the **private** `MONGODB_URI` to `mongodb+srv://USERNAME:URL_ENCODED_PASSWORD@YOUR_NODEPRACTICE_HOST/kartik_jewellers?retryWrites=true&w=majority`. Percent-encode special characters in the database password.
+1. Existing project: **Project 0**; existing FREE cluster: **NodePractice**; database **`kartik_jewellers`** already created with `admins`, `products`, `customers`. Do not recreate them.
+2. Under **Database Access**, create a dedicated application user with **readWrite only on `kartik_jewellers`**. Generate a random password and keep it in a private password manager / .env, not GitHub. Existing Atlas users have broad privileges and should not be reused for this app.
+3. Under **Network Access**, restrict access to your backend's outgoing IP where possible. **Security review required:** the current Atlas project access list includes `0.0.0.0/0` (all IPv4 addresses); remove it after ensuring necessary application IPs are allowlisted.
+4. **Connect** > **Drivers** > **Node.js** on NodePractice. The verified SRV host is `nodepractice.bpsc6bg.mongodb.net`. Set the **private** `MONGODB_URI` to `mongodb+srv://USERNAME:URL_ENCODED_PASSWORD@nodepractice.bpsc6bg.mongodb.net/kartik_jewellers?retryWrites=true&w=majority`. Percent-encode special characters in the database password. The Atlas connector does not reveal a user's password, so this URI is a safe template, not a working credential.
 
 ## Cloudinary — existing connected environment
 
