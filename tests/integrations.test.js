@@ -16,15 +16,16 @@ process.env.CLOUDINARY_API_KEY='test-key';
 process.env.CLOUDINARY_API_SECRET='test-secret';
 
 const {app}=await import('../src/server.js');
-const {Customer}=await import('../src/models.js');
+const {Customer,StoreSettings}=await import('../src/models.js');
 
 test('image upload, consent-only campaigns, unsubscribe and contact email (mocked providers)',async()=>{
- const original={
+ const original={store:StoreSettings.findOne,
   upload:cloudinary.uploader.upload_stream,
   transport:nodemailer.createTransport,
   find:Customer.find,
   unsubscribe:Customer.findOneAndUpdate
  };
+ StoreSettings.findOne=()=>({lean:async()=>null});
  const mail=[];
  const audience=[
   {name:'Opted In',email:'optin@example.test',marketingConsent:true,unsubscribed:false,unsubscribeToken:'token-1'},
@@ -59,6 +60,7 @@ test('image upload, consent-only campaigns, unsubscribe and contact email (mocke
    assert.equal(r.status,200);assert.equal(mail.length,2);assert.equal(mail[1].to,'owner@example.test');
  }finally{
   await new Promise((resolve,reject)=>server.close(e=>e?reject(e):resolve()));
+  StoreSettings.findOne=original.store;
   cloudinary.uploader.upload_stream=original.upload;nodemailer.createTransport=original.transport;
   Customer.find=original.find;Customer.findOneAndUpdate=original.unsubscribe;
  }
