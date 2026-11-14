@@ -30,3 +30,15 @@ Six sample products are seeded only on the first admin initialization when the p
 ## Deployment
 
 Deploy as a Node.js service to a hosting provider. Configure variables there, add your domain to CORS via `FRONTEND_URL`, and keep credentials and MongoDB access outside GitHub. Free-tier services can suspend or change limits: verify current tiers with the providers.
+
+
+## Admin store settings, media and campaign integration
+
+- GET /api/store returns the shop and saved Cloudinary logo/favicon URLs. Authenticated PUT /api/admin/store updates address, Maps URL, contact info, logo and favicon in MongoDB.
+- Products use metal=Gold or Silver; the public API can filter with ?metal=Silver. Legacy unclassified products are treated as Gold.
+- POST /api/admin/upload receives original JPG/PNG/WebP photos up to 12 MB, preserving original pixels in Cloudinary. Frontend uses f_auto,q_95,c_limit,w_1000 delivery transforms, which do not upscale small originals.
+- SMTP email campaigns accept posterUrl pointing to a secure Cloudinary image and attach the image to each message to opted-in customers.
+- WhatsApp campaign sending requires separately recorded WhatsApp consent plus an approved WhatsApp Business message template with IMAGE header.
+- Configure WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_TEMPLATE_NAME and optionally WHATSAPP_TEMPLATE_LANGUAGE=en, WHATSAPP_GRAPH_API_VERSION=v24.0 in private backend environment settings. Configure Meta business account and obtain template approval first.
+- Optional STORE_LOGO_URL and STORE_FAVICON_URL define branding before the admin sets them in MongoDB. PUBLIC_BASE_URL must be the deployed backend root for unsubscribe links.
+- Deployment order: backend first, then frontend; verify login, product CRUD, store settings, media upload and both campaign types on staging before production release.
