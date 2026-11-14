@@ -56,11 +56,11 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   const token=r.data.token;
   r=await req('/api/admin/products',{headers:{Authorization:'Bearer '+token}});assert.equal(r.status,200);
   r=await req('/api/admin/products',json('POST',{name:'',category:'Rings',price:10},token));assert.equal(r.status,400);
-  r=await req('/api/admin/products',json('POST',{name:'New Gold Ring',category:'Rings',price:2999},token));
-  assert.equal(r.status,201);assert.equal(r.data.name,'New Gold Ring');assert.equal(r.data.metal,'Gold');
+  r=await req('/api/admin/products',json('POST',{name:'New Gold Ring',category:'Rings',price:2999,purity:'22K',weight:18.2,images:['https://images.example.com/ring-side.jpg']},token));
+  assert.equal(r.status,201);assert.equal(r.data.name,'New Gold Ring');assert.equal(r.data.metal,'Gold');assert.equal(r.data.purity,'22K');assert.equal(r.data.weight,18.2);assert.equal(r.data.images.length,1);
   r=await req('/api/admin/store',json('PUT',{name:'Karthik Jewellers',address:'Pune, India',email:'owner@example.com',phone:'1234567890',mapsUrl:''},token));assert.equal(r.status,200);assert.match(r.data.mapsUrl,/maps/);
   r=await req('/api/admin/products/p2',json('PUT',{name:'Updated Ring',metal:'Silver',category:'Rings',price:3999},token));
-  assert.equal(r.status,200);assert.equal(r.data.price,3999);assert.equal(r.data.metal,'Silver');
+  assert.equal(r.status,200);assert.equal(r.data.price,3999);assert.equal(r.data.metal,'Silver');assert.equal(r.data.weight,null);
   r=await req('/api/admin/products/p2',{method:'DELETE',headers:{Authorization:'Bearer '+token}});
   assert.equal(r.status,200);assert.equal(items.length,1);
   r=await req('/api/admin/customers',json('POST',{name:'Visitor',phone:'9999999999',email:'visitor@example.com',marketingConsent:true},token));
