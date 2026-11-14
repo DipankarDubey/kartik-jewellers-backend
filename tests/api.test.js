@@ -8,10 +8,10 @@ process.env.FRONTEND_URL='http://localhost:5173';
 process.env.STORE_NAME='Karthik Jewellers';
 process.env.STORE_ADDRESS='Test address';
 const {app}=await import('../src/server.js');
-const {Admin,Product,Customer}=await import('../src/models.js');
+const {Admin,Product,Customer,StoreSettings}=await import('../src/models.js');
 
 test('public API, admin auth, product CRUD and customer consent (mocked database)', async () => {
- const previous={
+ const previous={store:StoreSettings.findOne,updateStore:StoreSettings.findOneAndUpdate,
   admin:Admin.findOne,
   products:Product.find,
   createProduct:Product.create,
@@ -22,6 +22,8 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   customerFind:Customer.find,
   customerCount:Customer.countDocuments
  };
+ StoreSettings.findOne=()=>({lean:async()=>null});
+ StoreSettings.findOneAndUpdate=async(filter,update)=>({...update.$set});
  let items=[{_id:'p1',name:'Test Ring',category:'Rings',price:1000,active:true,featured:false}];
  let visitors=[];
  const passwordHash=await bcrypt.hash('test-strong-password',4);
@@ -55,9 +57,10 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   r=await req('/api/admin/products',{headers:{Authorization:'Bearer '+token}});assert.equal(r.status,200);
   r=await req('/api/admin/products',json('POST',{name:'',category:'Rings',price:10},token));assert.equal(r.status,400);
   r=await req('/api/admin/products',json('POST',{name:'New Gold Ring',category:'Rings',price:2999},token));
-  assert.equal(r.status,201);assert.equal(r.data.name,'New Gold Ring');
-  r=await req('/api/admin/products/p2',json('PUT',{name:'Updated Ring',category:'Rings',price:3999},token));
-  assert.equal(r.status,200);assert.equal(r.data.price,3999);
+  assert.equal(r.status,201);assert.equal(r.data.name,'New Gold Ring');assert.equal(r.data.metal,'Gold');
+  r=await req('/api/admin/store',json('PUT',{name:'Karthik Jewellers',address:'Pune, India',email:'owner@example.com',phone:'1234567890',mapsUrl:''},token));assert.equal(r.status,200);assert.match(r.data.mapsUrl,/maps/);
+  r=await req('/api/admin/products/p2',json('PUT',{name:'Updated Ring',metal:'Silver',category:'Rings',price:3999},token));
+  assert.equal(r.status,200);assert.equal(r.data.price,3999);assert.equal(r.data.metal,'Silver');
   r=await req('/api/admin/products/p2',{method:'DELETE',headers:{Authorization:'Bearer '+token}});
   assert.equal(r.status,200);assert.equal(items.length,1);
   r=await req('/api/admin/customers',json('POST',{name:'Visitor',phone:'9999999999',email:'visitor@example.com',marketingConsent:true},token));
@@ -69,6 +72,7 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   r=await req('/api/contact',json('POST',{name:'A',email:'bad',message:'Hi'}));assert.equal(r.status,400);
  } finally {
   await new Promise((resolve,reject)=>server.close(err=>err?reject(err):resolve()));
+  StoreSettings.findOne=previous.store;StoreSettings.findOneAndUpdate=previous.updateStore;
   Admin.findOne=previous.admin;Product.find=previous.products;Product.create=previous.createProduct;
   Product.findByIdAndUpdate=previous.updateProduct;Product.findByIdAndDelete=previous.deleteProduct;
   Product.countDocuments=previous.countProduct;Customer.create=previous.customerCreate;
