@@ -7,5 +7,5 @@ export const Admin=mongoose.model('Admin',adminSchema);
 export const Product=mongoose.model('Product',productSchema);
 export const Customer=mongoose.model('Customer',customerSchema);
 
-const settingsSchema=new mongoose.Schema({key:{type:String,unique:true,default:'store'},name:{type:String,default:'Karthik Jewellers'},email:{type:String,default:''},phone:{type:String,default:''},address:{type:String,default:''},mapsUrl:{type:String,default:''}},opts);
+const settingsSchema=new mongoose.Schema({key:{type:String,unique:true,default:'store'},name:{type:String,default:'Karthik Jewellers'},email:{type:String,default:''},phone:{type:String,default:''},address:{type:String,default:''},mapsUrl:{type:String,default:''},logoUrl:{type:String,default:''},faviconUrl:{type:String,default:''}},opts);
 export const StoreSettings=mongoose.model('StoreSettings',settingsSchema);
