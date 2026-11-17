@@ -1,13 +1,12 @@
 import crypto from 'node:crypto';
 import express from 'express';
-import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import {Customer} from './models.js';
-import {Account, GoogleTicket, LoginCode, Plan, Enrollment, Payment} from './savings-models.js';
+import {Account, Plan, Enrollment, Payment} from './savings-models.js';
 import {paytmConfig, parsePaise, initiatePaytm, verifiedPaytmStatus, verifyCallback, checkoutFields} from './paytm.js';
 
-import {googleConfig, googleLoginRouter} from './google-auth.js';
+import {customerCredentialsRouter} from './customer-auth.js';
 
 const text = (value, n) => typeof value === 'string' ? value.trim().slice(0, n) : '';
 const fail = (res, code, error) => res.status(code).json({error});
@@ -16,45 +15,25 @@ const route = fn => (req, res, next) => Promise.resolve(fn(req, res)).catch(err 
   if (err.name === 'CastError') return fail(res, 400, 'Invalid identifier');
   next(err);
 });
-const emailOf = value => text(value, 255).toLowerCase();
-const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const digestCode = (email, code) => crypto.createHmac('sha256', process.env.JWT_SECRET)
-  .update(`savings-login:${email}:${code}`).digest('hex');
 const monthOf = date => new Date(date.getTime() + 330 * 60000).toISOString().slice(0, 7);
 const monthValid = value => /^20\d{2}-(0[1-9]|1[0-2])$/.test(value);
 const today = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
 const isValidId = mongoose.isObjectIdOrHexString;
 const orderId = () => 'KJ_' + crypto.randomBytes(16).toString('hex');
 const paymentFilter = (enrollment, installment) => ({enrollment: enrollment._id, installment});
-export function customerAuth(req, res, next) {
+export async function customerAuth(req, res, next) {
   const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
   try {
     const session = jwt.verify(token, process.env.JWT_SECRET, {algorithms: ['HS256'], audience: 'kj-savings'});
     if (session.role !== 'customer' || !isValidId(session.sub)) return fail(res, 401, 'Sign in again');
+    if (session.version && !await Account.exists({_id: session.sub, authVersion: session.version})) {
+      return fail(res, 401, 'Sign in again');
+    }
     req.accountId = session.sub;
     next();
   } catch {
     return fail(res, 401, 'Sign in again');
   }
-}
-
-const sessionFor = account => jwt.sign({sub: account.id, role: 'customer'}, process.env.JWT_SECRET,
-  {expiresIn: '4h', algorithm: 'HS256', audience: 'kj-savings'});
-
-async function addToCustomerDirectory(account) {
-  const now = new Date();
-  const values = {savingsAccount: account._id, emailVerifiedAt: now, lastPortalLoginAt: now};
-  if (account.googleLinkedAt) values.googleLinkedAt = account.googleLinkedAt;
-  const alreadyLinked = await Customer.findOneAndUpdate({savingsAccount: account._id}, {$set: values});
-  if (alreadyLinked) return;
-  const existing = await Customer.findOneAndUpdate(
-    {email: account.email, savingsAccount: null}, {$set: values}, {sort: {createdAt: 1}}
-  );
-  if (existing) return;
-  await Customer.updateOne({savingsAccount: account._id}, {
-    $set: values,
-    $setOnInsert: {email: account.email, name: account.name, phone: '', source: 'online', visitedAt: now}
-  }, {upsert: true});
 }
 
 function installmentMonth(enrollment, installment) {
@@ -98,123 +77,34 @@ async function nextInstallment(enrollment) {
 export function savingsRouter({adminAuth, mailTransport, frontendOrigin}) {
   const router = express.Router();
   router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
-  const codeLimit = rateLimit({windowMs: 15 * 60000, limit: 12, standardHeaders: 'draft-7', legacyHeaders: false});
-  router.get('/login/options', (req, res) => res.json({google: Boolean(googleConfig())}));
-  router.use('/login/google', googleLoginRouter({
-    frontendOrigin, limit: codeLimit,
-    async issueTicket(profile, digest, challenge) {
-      const email = emailOf(profile.email);
-      if (!emailValid.test(email) || email.length > 254) return false;
-      const authoritative = email.endsWith('@gmail.com') ||
-        (typeof profile.hd === 'string' && profile.hd.toLowerCase() === email.split('@')[1]);
-      if (!authoritative && !await Account.exists({googleSubject: profile.sub})) return false;
-      await GoogleTicket.create({digest, challenge, subject: profile.sub, email, authoritative,
-        name: text(profile.name, 120) || email.split('@')[0].slice(0, 120), expiresAt: new Date(Date.now() + 5 * 60000)});
-      return true;
-    },
-    async redeemTicket(digest, challenge) {
-      const ticket = await GoogleTicket.findOneAndDelete({digest, challenge, expiresAt: {$gt: new Date()}});
-      if (!ticket) return null;
-      const now = new Date();
-      let account = await Account.findOneAndUpdate({googleSubject: ticket.subject}, {$set: {lastLoginAt: now}}, {new: true});
-      if (!account && ticket.authoritative) {
-        try {
-          account = await Account.findOneAndUpdate({email: ticket.email, googleSubject: {$exists: false}}, {
-            $set: {lastLoginAt: now, googleLinkedAt: now, googleSubject: ticket.subject},
-            $setOnInsert: {email: ticket.email, name: ticket.name}
-          }, {new: true, upsert: true});
-        } catch (err) {
-          if (err.code !== 11000) throw err;
-          account = await Account.findOne({googleSubject: ticket.subject});
-        }
-      }
-      if (!account) return null;
-      await addToCustomerDirectory(account);
-      return sessionFor(account);
-    }
-  }));
+  router.use(customerCredentialsRouter({mailTransport}));
   router.get('/availability', (req, res) => res.json({paytm: Boolean(paytmConfig())}));
-  router.post('/login/request', codeLimit, route(async (req, res) => {
-    const email = emailOf(req.body?.email);
-    const name = text(req.body?.name, 120);
-    if (!emailValid.test(email) || email.length > 254) return fail(res, 400, 'Enter a valid email address');
-    let transport;
-    try { transport = mailTransport(); } catch { return fail(res, 503, 'Email sign-in is not configured'); }
-    const now = new Date();
-    const code = String(crypto.randomInt(100000, 1000000));
-    const digest = digestCode(email, code);
-    try {
-      await LoginCode.findOneAndUpdate(
-        {email, $or: [{updatedAt: {$lte: new Date(Date.now() - 60000)}}, {updatedAt: {$exists: false}}]},
-        {$set: {email, name, digest, attempts: 5, expiresAt: new Date(+now + 10 * 60000)}},
-        {upsert: true}
-      );
-    } catch (err) {
-      if (err.code === 11000) return fail(res, 429, 'Wait one minute before requesting another code');
-      throw err;
-    }
-    try {
-      await transport.sendMail({
-        from: process.env.SMTP_FROM, to: email,
-        subject: 'Your Karthik Jewellers sign-in code',
-        text: `Your sign-in code is ${code}. It expires in 10 minutes. If you did not request it, ignore this email.`
-      });
-    } catch {
-      await LoginCode.deleteOne({email, digest});
-      return fail(res, 503, 'Could not send the sign-in code. Please try again later.');
-    }
-    res.json({message: 'Check your email for a six-digit code.'});
-  }));
-
-  router.post('/login/verify', codeLimit, route(async (req, res) => {
-    const email = emailOf(req.body?.email);
-    const code = text(req.body?.code, 6);
-    if (!emailValid.test(email) || !/^\d{6}$/.test(code) || req.body.code.trim().length !== 6) {
-      return fail(res, 400, 'Enter the email address and six-digit code');
-    }
-    const filter = {email, expiresAt: {$gt: new Date()}, attempts: {$gt: 0}};
-    const challenge = await LoginCode.findOneAndDelete({...filter, digest: digestCode(email, code)});
-    if (!challenge) {
-      await LoginCode.updateOne(filter, {$inc: {attempts: -1}});
-      return fail(res, 401, 'The code is invalid, expired, or has no attempts left');
-    }
-    const account = await Account.findOneAndUpdate({email}, {
-      $set: {lastLoginAt: new Date()},
-      $setOnInsert: {name: challenge.name || email.split('@')[0].slice(0, 120), email}
-    }, {new: true, upsert: true});
-    await addToCustomerDirectory(account);
-    res.json({token: sessionFor(account)});
-  }));
 
   router.put('/account/profile', customerAuth, route(async (req, res) => {
-    const {name: inputName, phone: inputPhone, marketingConsent} = req.body || {};
+    const {name: inputName, marketingConsent} = req.body || {};
     const name = text(inputName, 120);
-    const phone = typeof inputPhone === 'string' ? inputPhone.trim().replace(/[ ()-]/g, '') : null;
-    if (!name || phone === null || (phone && !/^\+?[0-9]{7,15}$/.test(phone)) || typeof marketingConsent !== 'boolean') {
-      return fail(res, 400, 'Enter a name and a valid optional phone number');
-    }
+    if (!name || typeof marketingConsent !== 'boolean') return fail(res, 400, 'Enter a valid name.');
     const customer = await Customer.findOne({savingsAccount: req.accountId});
     if (!customer) return fail(res, 401, 'Sign in again');
-    if (phone !== customer.phone) customer.whatsappConsent = false;
     if (marketingConsent && (!customer.marketingConsent || customer.unsubscribed || !customer.unsubscribeToken)) {
       customer.unsubscribeToken ||= crypto.randomBytes(24).toString('hex');
       customer.emailMarketingOptInAt = new Date();
       customer.unsubscribed = false;
     }
-    customer.set({name, phone, marketingConsent});
+    customer.set({name, marketingConsent});
     await customer.save();
     const account = await Account.findByIdAndUpdate(req.accountId, {$set: {name}});
     if (!account) return fail(res, 401, 'Sign in again');
-    res.json({name, phone, marketingConsent});
+    res.json({name, marketingConsent});
   }));
 
   router.get('/account', customerAuth, route(async (req, res) => {
-    const account = await Account.findById(req.accountId).select('name email').lean();
+    const account = await Account.findById(req.accountId).select('name email mobile').lean();
     if (!account) return fail(res, 401, 'Sign in again');
     const contact = await Customer.findOne({savingsAccount: req.accountId}).select('name phone marketingConsent unsubscribed').lean();
     if (contact) {
       account.name = contact.name || account.name;
-      account.phone = contact.phone || '';
+      account.phone = account.mobile || contact.phone || '';
       account.marketingConsent = Boolean(contact.marketingConsent && !contact.unsubscribed);
     }
     const [plans, enrollments] = await Promise.all([
