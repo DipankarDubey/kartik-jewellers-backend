@@ -4,8 +4,10 @@ import rateLimit from 'express-rate-limit';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import {Customer} from './models.js';
-import {Account, LoginCode, Plan, Enrollment, Payment} from './savings-models.js';
+import {Account, GoogleTicket, LoginCode, Plan, Enrollment, Payment} from './savings-models.js';
 import {paytmConfig, parsePaise, initiatePaytm, verifiedPaytmStatus, verifyCallback} from './paytm.js';
+
+import {googleConfig, googleLoginRouter} from './google-auth.js';
 
 const text = (value, n) => typeof value === 'string' ? value.trim().slice(0, n) : '';
 const fail = (res, code, error) => res.status(code).json({error});
@@ -43,9 +45,13 @@ function customerAuth(req, res, next) {
   }
 }
 
+const sessionFor = account => jwt.sign({sub: account.id, role: 'customer'}, process.env.JWT_SECRET,
+  {expiresIn: '4h', algorithm: 'HS256', audience: 'kj-savings'});
+
 async function addToCustomerDirectory(account) {
   const now = new Date();
   const values = {savingsAccount: account._id, emailVerifiedAt: now, lastPortalLoginAt: now};
+  if (account.googleLinkedAt) values.googleLinkedAt = account.googleLinkedAt;
   const alreadyLinked = await Customer.findOneAndUpdate({savingsAccount: account._id}, {$set: values});
   if (alreadyLinked) return;
   const existing = await Customer.findOneAndUpdate(
@@ -100,6 +106,40 @@ export function savingsRouter({adminAuth, mailTransport, frontendOrigin}) {
   const router = express.Router();
   router.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
   const codeLimit = rateLimit({windowMs: 15 * 60000, limit: 12, standardHeaders: 'draft-7', legacyHeaders: false});
+  router.get('/login/options', (req, res) => res.json({google: Boolean(googleConfig())}));
+  router.use('/login/google', googleLoginRouter({
+    frontendOrigin, limit: codeLimit,
+    async issueTicket(profile, digest, challenge) {
+      const email = emailOf(profile.email);
+      if (!emailValid.test(email) || email.length > 254) return false;
+      const authoritative = email.endsWith('@gmail.com') ||
+        (typeof profile.hd === 'string' && profile.hd.toLowerCase() === email.split('@')[1]);
+      if (!authoritative && !await Account.exists({googleSubject: profile.sub})) return false;
+      await GoogleTicket.create({digest, challenge, subject: profile.sub, email, authoritative,
+        name: text(profile.name, 120) || email.split('@')[0].slice(0, 120), expiresAt: new Date(Date.now() + 5 * 60000)});
+      return true;
+    },
+    async redeemTicket(digest, challenge) {
+      const ticket = await GoogleTicket.findOneAndDelete({digest, challenge, expiresAt: {$gt: new Date()}});
+      if (!ticket) return null;
+      const now = new Date();
+      let account = await Account.findOneAndUpdate({googleSubject: ticket.subject}, {$set: {lastLoginAt: now}}, {new: true});
+      if (!account && ticket.authoritative) {
+        try {
+          account = await Account.findOneAndUpdate({email: ticket.email, googleSubject: {$exists: false}}, {
+            $set: {lastLoginAt: now, googleLinkedAt: now, googleSubject: ticket.subject},
+            $setOnInsert: {email: ticket.email, name: ticket.name}
+          }, {new: true, upsert: true});
+        } catch (err) {
+          if (err.code !== 11000) throw err;
+          account = await Account.findOne({googleSubject: ticket.subject});
+        }
+      }
+      if (!account) return null;
+      await addToCustomerDirectory(account);
+      return sessionFor(account);
+    }
+  }));
   router.get('/availability', (req, res) => res.json({paytm: Boolean(paytmConfig())}));
   router.post('/login/request', codeLimit, route(async (req, res) => {
     const email = emailOf(req.body?.email);
@@ -150,14 +190,40 @@ export function savingsRouter({adminAuth, mailTransport, frontendOrigin}) {
       $setOnInsert: {name: challenge.name || email.split('@')[0].slice(0, 120), email}
     }, {new: true, upsert: true});
     await addToCustomerDirectory(account);
-    const token = jwt.sign({sub: account.id, role: 'customer'}, process.env.JWT_SECRET,
-      {expiresIn: '4h', algorithm: 'HS256', audience: 'kj-savings'});
-    res.json({token});
+    res.json({token: sessionFor(account)});
+  }));
+
+  router.put('/account/profile', customerAuth, route(async (req, res) => {
+    const {name: inputName, phone: inputPhone, marketingConsent} = req.body || {};
+    const name = text(inputName, 120);
+    const phone = typeof inputPhone === 'string' ? inputPhone.trim().replace(/[ ()-]/g, '') : null;
+    if (!name || phone === null || (phone && !/^\+?[0-9]{7,15}$/.test(phone)) || typeof marketingConsent !== 'boolean') {
+      return fail(res, 400, 'Enter a name and a valid optional phone number');
+    }
+    const customer = await Customer.findOne({savingsAccount: req.accountId});
+    if (!customer) return fail(res, 401, 'Sign in again');
+    if (phone !== customer.phone) customer.whatsappConsent = false;
+    if (marketingConsent && (!customer.marketingConsent || customer.unsubscribed || !customer.unsubscribeToken)) {
+      customer.unsubscribeToken ||= crypto.randomBytes(24).toString('hex');
+      customer.emailMarketingOptInAt = new Date();
+      customer.unsubscribed = false;
+    }
+    customer.set({name, phone, marketingConsent});
+    await customer.save();
+    const account = await Account.findByIdAndUpdate(req.accountId, {$set: {name}});
+    if (!account) return fail(res, 401, 'Sign in again');
+    res.json({name, phone, marketingConsent});
   }));
 
   router.get('/account', customerAuth, route(async (req, res) => {
     const account = await Account.findById(req.accountId).select('name email').lean();
     if (!account) return fail(res, 401, 'Sign in again');
+    const contact = await Customer.findOne({savingsAccount: req.accountId}).select('name phone marketingConsent unsubscribed').lean();
+    if (contact) {
+      account.name = contact.name || account.name;
+      account.phone = contact.phone || '';
+      account.marketingConsent = Boolean(contact.marketingConsent && !contact.unsubscribed);
+    }
     const [plans, enrollments] = await Promise.all([
       Plan.find({active: true}).sort({createdAt: -1}).lean(),
       Enrollment.find({account: req.accountId}).sort({createdAt: -1}).lean()
