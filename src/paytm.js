@@ -1,6 +1,6 @@
 import checksum from 'paytmchecksum';
 
-export function paytmConfig(env = process.env) {
+export function paytmConfig(env = process.env, callbackPath = '/api/savings/paytm/callback') {
   const mid = env.PAYTM_MID?.trim();
   const key = env.PAYTM_MERCHANT_KEY?.trim();
   const website = env.PAYTM_WEBSITE?.trim();
@@ -11,7 +11,7 @@ export function paytmConfig(env = process.env) {
   return {
     mid, key, website,
     host: mode === 'production' ? 'https://secure.paytmpayments.com' : 'https://securestage.paytmpayments.com',
-    callbackUrl: new URL('/api/savings/paytm/callback', publicUrl).href
+    callbackUrl: new URL(callbackPath, publicUrl).href
   };
 }
 
@@ -72,4 +72,11 @@ export async function verifiedPaytmStatus(config, payment) {
 export function verifyCallback(config, data) {
   const {CHECKSUMHASH, ...fields} = data;
   return typeof CHECKSUMHASH === 'string' && checksum.verifySignature(fields, config.key, CHECKSUMHASH);
+}
+
+export function checkoutFields(config, payment, token) {
+  const {mid} = config;
+  const {orderId} = payment;
+  const query = new URLSearchParams({mid, orderId});
+  return {url: config.host + '/theia/api/v1/showPaymentPage?' + query, fields: {mid, orderId, txnToken: token}};
 }
