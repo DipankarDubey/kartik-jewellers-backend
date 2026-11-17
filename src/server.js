@@ -12,6 +12,8 @@ import multer from 'multer';
 import {v2 as cloudinary} from 'cloudinary';
 import {Admin,Product,Customer,StoreSettings} from './models.js';
 import {seed} from './seed.js';
+import {savingsRouter} from './savings.js';
+import {initializeSavings} from './savings-models.js';
 
 const app=express();
 // Render terminates HTTPS at its reverse proxy. Trust only the nearest proxy hop,
@@ -78,7 +80,8 @@ app.post('/api/admin/whatsapp/send',auth,rateLimit({windowMs:60*60*1000,limit:2}
 }catch(e){if(e.message==='INVALID_POSTER')return fail(res,'Poster must be a Cloudinary HTTPS image URL');next(e)}});
 app.get('/api/admin/whatsapp/audience',auth,async(req,res,next)=>{try{const customers=await Customer.find({whatsappConsent:true}).select('name phone').limit(500).lean();res.json({customers});}catch(e){next(e)}});
 app.post('/api/admin/campaigns/send',auth,rateLimit({windowMs:60*60*1000,limit:5}),async(req,res,next)=>{try{const subject=str(req.body?.subject,150),message=str(req.body?.message,5000);let poster;try{poster=posterUrl(req.body?.posterUrl)}catch{return fail(res,'Poster must be a Cloudinary HTTPS image URL')}if(subject.length<3||message.length<10)return fail(res,'Add a subject and message');const customers=await Customer.find({email:{$ne:''},marketingConsent:true,unsubscribed:false}).limit(500);if(!customers.length)return fail(res,'No opted-in customers available');const transport=mailTransport();const base=process.env.PUBLIC_BASE_URL||`http://localhost:${port}`;let sent=0;const errors=[];for(const c of customers){try{const unsubscribe=`${base}/api/unsubscribe/${c.unsubscribeToken}`;await transport.sendMail({attachments:poster?[{filename:'offer-poster.jpg',href:poster}]:[],from:process.env.SMTP_FROM,to:c.email,subject,text:`Hi ${c.name},\n\n${message}\n\nTo unsubscribe: ${unsubscribe}`,html:`<p>Hi ${htmlEscape(c.name)},</p><p>${htmlEscape(message).replace(/\n/g,'<br>')}</p><p><a href="${unsubscribe}">Unsubscribe</a></p>`});sent++;}catch(e){errors.push(c.email);}}res.json({sent,failed:errors.length,total:customers.length});}catch(e){if(e.message==='SMTP_NOT_CONFIGURED')return fail(res,'SMTP service not yet configured',503);next(e)}});
+app.use('/api/savings', savingsRouter({adminAuth: auth, mailTransport, frontendOrigin: origin[0]}));
 app.use(handleError);
-async function start(){for(const key of ['MONGODB_URI','JWT_SECRET','ADMIN_USERNAME','ADMIN_PASSWORD'])if(!process.env[key])throw Error(`Missing ${key}`);if(process.env.JWT_SECRET.length<32)throw Error('JWT_SECRET must be at least 32 characters');await mongoose.connect(process.env.MONGODB_URI);await seed();app.listen(port,()=>console.log(`Karthik Jewellers backend listening on ${port}`));}
+async function start(){for(const key of ['MONGODB_URI','JWT_SECRET','ADMIN_USERNAME','ADMIN_PASSWORD'])if(!process.env[key])throw Error(`Missing ${key}`);if(process.env.JWT_SECRET.length<32)throw Error('JWT_SECRET must be at least 32 characters');await mongoose.connect(process.env.MONGODB_URI);await Promise.all([seed(), initializeSavings(), Customer.init()]);app.listen(port,()=>console.log(`Karthik Jewellers backend listening on ${port}`));}
 if(process.env.NODE_ENV!=='test')start().catch(e=>{console.error(e.message);process.exit(1)});
 export {app};
