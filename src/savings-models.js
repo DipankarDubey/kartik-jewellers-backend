@@ -12,23 +12,23 @@ export const Account = model('SavingsAccount', {
   email: {type: String, required: true, unique: true},
   name: {type: String, required: true},
   lastLoginAt: Date,
+  mobile: {type: String, unique: true, sparse: true},
+  passwordHash: {type: String, select: false},
+  authVersion: String,
+  passwordEmailVerifiedAt: Date,
+  temporaryPasswordUntil: Date,
+  inviteState: String,
+  inviteAttemptAt: Date,
   googleSubject: {type: String, unique: true, sparse: true, select: false},
   googleLinkedAt: Date
 });
 export const LoginCode = model('SavingsLoginCode', {
   email: {type: String, required: true, unique: true},
   name: String,
+  mobile: String,
+  mode: String,
   digest: String,
   attempts: Number,
-  expiresAt: {type: Date, expires: 0}
-});
-export const GoogleTicket = model('SavingsGoogleTicket', {
-  digest: {type: String, required: true, unique: true},
-  challenge: String,
-  subject: String,
-  email: String,
-  name: String,
-  authoritative: Boolean,
   expiresAt: {type: Date, expires: 0}
 });
 export const Plan = model('SavingsPlan', {
@@ -69,5 +69,5 @@ export const Payment = model('SavingsPayment', {
 ]);
 
 export const initializeSavings = () => Promise.all(
-  [Account, LoginCode, GoogleTicket, Plan, Enrollment, Payment].map(collection => collection.init())
+  [Account, LoginCode, Plan, Enrollment, Payment].map(collection => collection.init())
 );

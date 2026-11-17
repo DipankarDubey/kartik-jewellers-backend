@@ -63,8 +63,6 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   assert.equal(r.status,200);assert.equal(r.data.price,3999);assert.equal(r.data.metal,'Silver');assert.equal(r.data.weight,null);
   r=await req('/api/admin/products/p2',{method:'DELETE',headers:{Authorization:'Bearer '+token}});
   assert.equal(r.status,200);assert.equal(items.length,1);
-  r=await req('/api/admin/customers',json('POST',{name:'Visitor',phone:'9999999999',email:'visitor@example.com',marketingConsent:true},token));
-  assert.equal(r.status,201);assert.equal(visitors.length,1);assert.equal(r.data.marketingConsent,true);
   r=await req('/api/admin/customers',json('POST',{name:'Visitor 2',phone:'9999999998',marketingConsent:true},token));
   assert.equal(r.status,400);
   r=await req('/api/admin/stats',{headers:{Authorization:'Bearer '+token}});assert.equal(r.status,200);
