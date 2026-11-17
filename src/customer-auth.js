@@ -86,7 +86,7 @@ export function customerCredentialsRouter({mailTransport}) {
     if (!matchesPurpose(existing, mobile, 'register') || await Account.exists({mobile, email: {$ne: email}})) {
       return fail(res, 409, 'This mobile number or email is already registered. Sign in or reset your password.');
     }
-    if (existing || await Customer.exists({email})) return res.json({verificationRequired: true});
+    if (existing) return res.json({verificationRequired: true});
 
     const account = await Account.create({name, email, mobile, passwordHash: await bcrypt.hash(password, bcryptRounds),
       authVersion: version(), lastLoginAt: new Date()});
@@ -132,7 +132,11 @@ export function customerCredentialsRouter({mailTransport}) {
     const account = await Account.findOne({email}).select('+passwordHash');
     if (!matchesPurpose(account, mobile, mode)) return res.json({message: setupMessage});
     let transport;
-    try {transport = mailTransport();} catch {return fail(res, 503, 'Email verification is temporarily unavailable.');}
+    try {transport = mailTransport();} catch {
+      const purpose = mode === 'register' ? 'This email belongs to an existing account. Contact the showroom to restore access.' :
+        'Password reset email is unavailable. Contact the showroom for help.';
+      return fail(res, 503, purpose);
+    }
     const now = Date.now();
     const code = String(crypto.randomInt(100000, 1000000));
     const digest = hashCode(email, mobile, mode, code);

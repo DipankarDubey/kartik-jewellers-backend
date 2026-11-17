@@ -13,7 +13,8 @@ test('new customers register without email while legacy and admin accounts stay 
   const newId = '0123456789abcdef01234562';
   const selfId = '0123456789abcdef01234563';
   const accounts = [{_id: legacyId, email:'legacy@example.test', name:'Legacy customer'}];
-  const directory = new Map();
+  const visitor = {_id:'visitor',email:'visitor@example.test',phone:'9000000000'};
+  const directory = new Map([['visitor',visitor]]);
   const messages = [];
   let challenge;
   let mailFails = false;
@@ -29,7 +30,6 @@ test('new customers register without email while legacy and admin accounts stay 
   }
   t.mock.method(Account, 'findOne', filter => ({select: async () => lookup(filter)}));
   t.mock.method(Account, 'exists', async filter => accounts.some(a => a.mobile === filter.mobile && a.email !== filter.email.$ne));
-  t.mock.method(Customer, 'exists', async ({email}) => email === 'visitor@example.test');
   t.mock.method(Account, 'findOneAndUpdate', async (filter, changes) => update(lookup(filter), changes));
   t.mock.method(Account, 'updateOne', async (filter, changes) => update(lookup(filter), changes));
   t.mock.method(Account, 'create', async data => {
@@ -68,6 +68,8 @@ test('new customers register without email while legacy and admin accounts stay 
   try {
     const legacy = {mode:'register', name:'New submission', email:'legacy@example.test', mobile:'+91 98765 43210'};
     assert.equal((await send('/password/request', {...legacy,email:''})).status, 400);
+    assert.deepEqual(await (await send('/register', {...legacy,password:'a customer-chosen password'})).json(), {verificationRequired:true});
+    assert.equal(messages.length,0);
     assert.equal((await send('/password/request', legacy)).status, 200);
     const code = messages[0].text.match(/\b\d{6}\b/)[0];
     const chosen = 'a customer-chosen password';
@@ -84,12 +86,12 @@ test('new customers register without email while legacy and admin accounts stay 
     assert.equal((await send('/login/password', {mobile:legacy.mobile,password:chosen})).status,401);
 
     const beforeSignup = messages.length;
-    const registration = {name:'New shopper', email:'self@example.test', mobile:'9001234567', password:chosen};
-    assert.deepEqual(await (await send('/register', {...registration,email:'visitor@example.test'})).json(), {verificationRequired:true});
+    const registration = {name:'New shopper', email:visitor.email, mobile:'9001234567', password:chosen};
     const created = await send('/register', registration);
     assert.equal(created.status,201);
     assert.equal(session((await created.json()).token).sub,selfId);
     assert.equal(directory.get(selfId).emailVerifiedAt, undefined);
+    assert.deepEqual(directory.get('visitor'), visitor);
     assert.equal(messages.length,beforeSignup);
     assert.equal((await send('/register', {...registration,email:'someone-else@example.test'})).status,409);
     assert.equal((await send('/login/password', {mobile:registration.mobile,password:chosen})).status,200);
