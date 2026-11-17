@@ -7,10 +7,11 @@ import {addCustomerWithLogin, customerCredentialsRouter} from '../src/customer-a
 import {Account, LoginCode} from '../src/savings-models.js';
 import {Customer} from '../src/models.js';
 
-test('legacy customers keep their account and admin invitations require a permanent password', async t => {
+test('new customers register without email while legacy and admin accounts stay protected', async t => {
   process.env.JWT_SECRET = 'test-customer-authentication-secret-that-is-long-enough';
   const legacyId = '0123456789abcdef01234561';
   const newId = '0123456789abcdef01234562';
+  const selfId = '0123456789abcdef01234563';
   const accounts = [{_id: legacyId, email:'legacy@example.test', name:'Legacy customer'}];
   const directory = new Map();
   const messages = [];
@@ -27,10 +28,12 @@ test('legacy customers keep their account and admin invitations require a perman
     return account;
   }
   t.mock.method(Account, 'findOne', filter => ({select: async () => lookup(filter)}));
+  t.mock.method(Account, 'exists', async filter => accounts.some(a => a.mobile === filter.mobile && a.email !== filter.email.$ne));
+  t.mock.method(Customer, 'exists', async ({email}) => email === 'visitor@example.test');
   t.mock.method(Account, 'findOneAndUpdate', async (filter, changes) => update(lookup(filter), changes));
   t.mock.method(Account, 'updateOne', async (filter, changes) => update(lookup(filter), changes));
   t.mock.method(Account, 'create', async data => {
-    const account = {_id:newId, ...data};
+    const account = {_id: data.email === 'new@example.test' ? newId : selfId, ...data};
     accounts.push(account);
     return account;
   });
@@ -80,6 +83,17 @@ test('legacy customers keep their account and admin invitations require a perman
     assert.notEqual(session((await reset.json()).token).version, original.version);
     assert.equal((await send('/login/password', {mobile:legacy.mobile,password:chosen})).status,401);
 
+    const beforeSignup = messages.length;
+    const registration = {name:'New shopper', email:'self@example.test', mobile:'9001234567', password:chosen};
+    assert.deepEqual(await (await send('/register', {...registration,email:'visitor@example.test'})).json(), {verificationRequired:true});
+    const created = await send('/register', registration);
+    assert.equal(created.status,201);
+    assert.equal(session((await created.json()).token).sub,selfId);
+    assert.equal(directory.get(selfId).emailVerifiedAt, undefined);
+    assert.equal(messages.length,beforeSignup);
+    assert.equal((await send('/register', {...registration,email:'someone-else@example.test'})).status,409);
+    assert.equal((await send('/login/password', {mobile:registration.mobile,password:chosen})).status,200);
+
     const admin = {name:'New customer', email:'new@example.test', phone:'9988776655'};
     assert.equal((await send('/admin/customers', {...admin,email:undefined})).status, 400);
     assert.equal((await send('/admin/customers', {...admin,phone:'invalid'})).status, 400);
@@ -91,8 +105,8 @@ test('legacy customers keep their account and admin invitations require a perman
     assert.equal((await invitation.json()).inviteEmail,'sent');
     assert.match(messages.at(-1).text, /Username: 9988776655/);
     const temporary = messages.at(-1).text.match(/Temporary password: (\S+)/)[1];
-    assert.notEqual(accounts[1].passwordHash, temporary);
-    assert.equal(await bcrypt.compare(temporary, accounts[1].passwordHash), true);
+    assert.notEqual(accounts.find(a => a._id === newId).passwordHash, temporary);
+    assert.equal(await bcrypt.compare(temporary, accounts.find(a => a._id === newId).passwordHash), true);
     const login = {mobile:admin.phone,password:temporary};
     assert.deepEqual(await (await send('/login/password', login)).json(), {changeRequired:true});
     assert.equal((await send('/admin/customers', admin)).status,409);

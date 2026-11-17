@@ -51,10 +51,12 @@ async function syncDirectory(account, fields = {}, protectConsent = false) {
     {savingsAccount: account._id}, {$set: values}, {new: true}
   );
   if (changed) return changed;
-  const linked = await Customer.findOneAndUpdate(
-    {email: account.email, savingsAccount: null}, {$set: values}, {new: true, sort: {createdAt: 1}}
-  );
-  if (linked) return linked;
+  if (account.passwordEmailVerifiedAt || fields.source === 'store') {
+    const linked = await Customer.findOneAndUpdate(
+      {email: account.email, savingsAccount: null}, {$set: values}, {new: true, sort: {createdAt: 1}}
+    );
+    if (linked) return linked;
+  }
   const insert = {name: account.name, source: 'online', visitedAt: new Date(), unsubscribeToken: crypto.randomBytes(24).toString('hex')};
   for (const key of Object.keys(values)) delete insert[key];
   return Customer.findOneAndUpdate({savingsAccount: account._id}, {
@@ -70,6 +72,27 @@ function matchesPurpose(account, mobile, mode) {
 export function customerCredentialsRouter({mailTransport}) {
   const router = express.Router();
   const limit = rateLimit({windowMs: 15 * minute, limit: 15, standardHeaders: 'draft-7', legacyHeaders: false});
+
+  router.post('/register', limit, route(async (req, res) => {
+    const {name: rawName, mobile: rawMobile, email: rawEmail, password} = req.body || {};
+    const name = clean(rawName, 120);
+    const mobile = mobileNumber(rawMobile);
+    const email = emailAddress(rawEmail);
+    if (!name || !mobile || !email) return fail(res, 400, 'Enter your name, Indian mobile number and email.');
+    if (!acceptablePassword(password)) {
+      return fail(res, 400, 'Use a password with at least 12 characters and no more than 72 UTF-8 bytes.');
+    }
+    const existing = await Account.findOne({email}).select('+passwordHash');
+    if (!matchesPurpose(existing, mobile, 'register') || await Account.exists({mobile, email: {$ne: email}})) {
+      return fail(res, 409, 'This mobile number or email is already registered. Sign in or reset your password.');
+    }
+    if (existing || await Customer.exists({email})) return res.json({verificationRequired: true});
+
+    const account = await Account.create({name, email, mobile, passwordHash: await bcrypt.hash(password, bcryptRounds),
+      authVersion: version(), lastLoginAt: new Date()});
+    await syncDirectory(account);
+    res.status(201).json({token: sessionFor(account)});
+  }));
 
   router.post('/login/password', limit, route(async (req, res) => {
     const {mobile: rawMobile, password, newPassword} = req.body || {};
