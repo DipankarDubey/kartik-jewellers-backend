@@ -178,6 +178,7 @@ export function ordersRouter({adminAuth, mailTransport, frontendOrigin}) {
       const transport = mailTransport();
       await transport.sendMail({from: process.env.SMTP_FROM, to: claim.email,
         subject: 'Your Karthik Jewellers order was delivered',
+        messageId: '<delivered-' + orderId + '@kartik-jewellers.onrender.com>',
         text: `Hi ${claim.address.name},\n\nYour Karthik Jewellers order ${orderId} has been marked delivered.\n\nThank you for shopping with us.`});
     } catch {
       await Order.updateOne(filter, {$set: {deliveryEmailState: 'failed'}});
