@@ -5,7 +5,7 @@ import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import {Customer} from './models.js';
 import {Account, GoogleTicket, LoginCode, Plan, Enrollment, Payment} from './savings-models.js';
-import {paytmConfig, parsePaise, initiatePaytm, verifiedPaytmStatus, verifyCallback} from './paytm.js';
+import {paytmConfig, parsePaise, initiatePaytm, verifiedPaytmStatus, verifyCallback, checkoutFields} from './paytm.js';
 
 import {googleConfig, googleLoginRouter} from './google-auth.js';
 
@@ -26,14 +26,7 @@ const today = () => new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10
 const isValidId = mongoose.isObjectIdOrHexString;
 const orderId = () => 'KJ_' + crypto.randomBytes(16).toString('hex');
 const paymentFilter = (enrollment, installment) => ({enrollment: enrollment._id, installment});
-const checkoutFields = (config, payment, token) => {
-  const {mid} = config;
-  const {orderId} = payment;
-  const query = new URLSearchParams({mid, orderId});
-  return {url: config.host + '/theia/api/v1/showPaymentPage?' + query, fields: {mid, orderId, txnToken: token}};
-};
-
-function customerAuth(req, res, next) {
+export function customerAuth(req, res, next) {
   const token = req.headers.authorization?.match(/^Bearer (.+)$/i)?.[1];
   try {
     const session = jwt.verify(token, process.env.JWT_SECRET, {algorithms: ['HS256'], audience: 'kj-savings'});
