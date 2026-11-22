@@ -20,12 +20,16 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   countProduct:Product.countDocuments,
   customerCreate:Customer.create,
   customerFind:Customer.find,
-  customerCount:Customer.countDocuments
+  customerCount:Customer.countDocuments,
+  customerUpdate:Customer.findOneAndUpdate
  };
  StoreSettings.findOne=()=>({lean:async()=>null});
  StoreSettings.findOneAndUpdate=async(filter,update)=>({...update.$set});
  let items=[{_id:'p1',name:'Test Ring',category:'Rings',price:1000,active:true,featured:false}];
- let visitors=[];
+ const visitorId='0123456789abcdef01234567';
+ const accountId='0123456789abcdef01234568';
+ const visitor={_id:visitorId,name:'Linked shopper',savingsAccount:accountId,marketingConsent:true,whatsappConsent:true};
+ const visitors=[visitor];
  const passwordHash=await bcrypt.hash('test-strong-password',4);
  Admin.findOne=async({username})=>username==='test-admin'?{id:'admin1',username,passwordHash}:null;
  Product.find=filter=>({sort:()=>({lean:async()=>filter?.active===true?items.filter(p=>p.active):items})});
@@ -34,8 +38,19 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
  Product.findByIdAndDelete=async id=>{const i=items.findIndex(p=>p._id===id);return i===-1?null:items.splice(i,1)[0]};
  Product.countDocuments=async()=>items.length;
  Customer.create=async fields=>{const v={_id:'v1',...fields};visitors.push(v);return v};
- Customer.find=()=>({sort:()=>({limit:()=>({lean:async()=>visitors})}),limit:async()=>[]});
- Customer.countDocuments=async()=>visitors.length;
+ const matching = filter => visitors.filter(customer =>
+  (filter.removedAt !== null || !customer.removedAt) &&
+  (!filter.whatsappConsent || customer.whatsappConsent));
+ Customer.find=filter=>({
+  select:()=>({sort:()=>({limit:()=>({lean:async()=>matching(filter)})}),
+   limit:()=>({lean:async()=>matching(filter)})})
+ });
+ Customer.countDocuments=async filter=>matching(filter).length;
+ Customer.findOneAndUpdate=async (filter, update)=>{
+  assert.equal(filter.removedAt,null);
+  const customer=matching(filter).find(row=>row._id===filter._id);
+  return customer ? Object.assign(customer,update.$set) : null;
+ };
  const server=app.listen(0,'127.0.0.1');
  await new Promise(resolve=>server.once('listening',resolve));
  const url='http://127.0.0.1:'+server.address().port;
@@ -66,6 +81,19 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   r=await req('/api/admin/customers',json('POST',{name:'Visitor 2',phone:'9999999998',marketingConsent:true},token));
   assert.equal(r.status,400);
   r=await req('/api/admin/stats',{headers:{Authorization:'Bearer '+token}});assert.equal(r.status,200);
+  const customerPath='/api/admin/customers/'+visitorId;
+  const adminHeaders={Authorization:'Bearer '+token};
+  assert.equal((await req(customerPath,{method:'DELETE'})).status,401);
+  assert.equal((await req('/api/admin/customers/bad-id',{method:'DELETE',headers:adminHeaders})).status,400);
+  assert.equal((await req(customerPath,{method:'DELETE',headers:adminHeaders})).status,200);
+  assert.equal((await req(customerPath,{method:'DELETE',headers:adminHeaders})).status,404);
+  assert.equal(visitor.savingsAccount,accountId);
+  assert.equal(visitor.marketingConsent,false);
+  assert.equal(visitor.whatsappConsent,false);
+  assert.equal(visitor.unsubscribed,true);
+  assert.deepEqual((await req('/api/admin/customers',{headers:adminHeaders})).data,[]);
+  assert.deepEqual((await req('/api/admin/whatsapp/audience',{headers:adminHeaders})).data.customers,[]);
+  assert.equal((await req('/api/admin/stats',{headers:adminHeaders})).data.customers,0);
   r=await req('/api/admin/upload',{method:'POST',headers:{Authorization:'Bearer '+token}});assert.equal(r.status,400);
   r=await req('/api/contact',json('POST',{name:'A',email:'bad',message:'Hi'}));assert.equal(r.status,400);
  } finally {
@@ -74,6 +102,6 @@ test('public API, admin auth, product CRUD and customer consent (mocked database
   Admin.findOne=previous.admin;Product.find=previous.products;Product.create=previous.createProduct;
   Product.findByIdAndUpdate=previous.updateProduct;Product.findByIdAndDelete=previous.deleteProduct;
   Product.countDocuments=previous.countProduct;Customer.create=previous.customerCreate;
-  Customer.find=previous.customerFind;Customer.countDocuments=previous.customerCount;
+  Customer.find=previous.customerFind;Customer.countDocuments=previous.customerCount;Customer.findOneAndUpdate=previous.customerUpdate;
  }
 });
